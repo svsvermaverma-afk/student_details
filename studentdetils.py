@@ -19,7 +19,16 @@ def load_data():
     df = pd.read_excel(file_path, sheet_name="Sheet1 (5)")
     df = df.dropna(subset=["STUDENT'S NAME"]).copy()
     
-    # 1. नंबर्स और टेक्स्ट का साफ़ फ़ॉर्मेट
+    # कॉलम नाम साफ़ करना (Line breaks हटाना)
+    clean_cols = {}
+    for col in df.columns:
+        if "OCCUPATION" in str(col):
+            clean_cols[col] = "OCCUPATION"
+        elif str(col).strip() == "ADDRESS":
+            clean_cols[col] = "ADDRESS"
+    df.rename(columns=clean_cols, inplace=True)
+    
+    # 1. नंबर्स और टेक्स्ट फ़ॉर्मेटिंग
     if "ROLL NO." in df.columns:
         df["ROLL NO."] = pd.to_numeric(df["ROLL NO."], errors="coerce").fillna(0).astype(int)
     
@@ -41,18 +50,16 @@ def load_data():
     if "D.O.B." in df.columns:
         df["D.O.B."] = pd.to_datetime(df["D.O.B."], errors="coerce").dt.strftime("%d-%m-%Y").fillna(df["D.O.B."].astype(str))
 
-    # 2. कैटेगरी, जेंडर, धर्म, जाति को साफ़ करना
-    for col in ["GENDER", "CAT.", "RELIGION", "CASTE"]:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.strip().str.upper().replace("NAN", "-")
+    # E.CODE और DEPT की सफ़ाई
+    if "E.CODE" in df.columns:
+        df["E.CODE"] = df["E.CODE"].fillna("-").astype(str).str.strip().replace("", "-")
+    if "DEPT." in df.columns:
+        df["DEPT."] = df["DEPT."].fillna("-").astype(str).str.strip().replace("", "-")
 
-    # 3. ऑक्यूपेशन कॉलम का नाम सही सेट करना
-    occ_col = [c for c in df.columns if "OCCUPATION" in str(c)]
-    if occ_col:
-        df.rename(columns={occ_col[0]: "OCCUPATION (OTH / HE / HS)"}, inplace=True)
-        
-    if "ADDRESS " in df.columns:
-        df.rename(columns={"ADDRESS ": "ADDRESS"}, inplace=True)
+    # 2. फ़िल्टर वाले टेक्स्ट कॉलम साफ़ करना
+    for col in ["GENDER", "CAT.", "RELIGION", "CASTE", "OCCUPATION"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip().str.upper().replace("NAN", "-").replace("", "-")
 
     return df
 
@@ -67,10 +74,14 @@ st.title("📋 Class XII B - Complete Student Information")
 st.caption("Aditya Birla Intermediate College, Renukoot")
 
 # ==================== साइडबार फ़िल्टर्स ====================
-st.sidebar.header("🔍 त्वरित फ़िल्टर (Filters)")
+st.sidebar.header("🔍 डेटा फ़िल्टर (Data Filters)")
 
-# नाम/पिता के नाम से सर्च
-search_text = st.sidebar.text_input("विद्यार्थी या पिता का नाम खोजें:")
+# नाम / पिता का नाम सर्च
+search_text = st.sidebar.text_input("विद्यार्थी / पिता का नाम खोजें:")
+
+# ऑक्यूपेशन फ़िल्टर (HE / SUPPLY / OTH)
+occ_vals = ["All"] + sorted([x for x in df["OCCUPATION"].unique() if x != "-"])
+sel_occ = st.sidebar.selectbox("Occupation (HE / SUPPLY / OTH):", occ_vals)
 
 # जेंडर फ़िल्टर
 gender_vals = ["All"] + sorted([x for x in df["GENDER"].unique() if x != "-"])
@@ -91,6 +102,9 @@ sel_caste = st.sidebar.selectbox("Caste (जाति):", caste_vals)
 # फ़िल्टर लागू करना
 filtered_df = df.copy()
 
+if sel_occ != "All":
+    filtered_df = filtered_df[filtered_df["OCCUPATION"] == sel_occ]
+
 if sel_gender != "All":
     filtered_df = filtered_df[filtered_df["GENDER"] == sel_gender]
 
@@ -109,42 +123,25 @@ if search_text:
         filtered_df["FATHER'S NAME"].astype(str).str.contains(search_text, case=False, na=False)
     ]
 
-# ==================== समरी मेट्रिक्स कार्ड्स ====================
+# ==================== शीर्ष समरी कार्ड्स ====================
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("कुल छात्र (Total)", len(filtered_df))
 c2.metric("Boys (M)", len(filtered_df[filtered_df["GENDER"] == "M"]))
 c3.metric("Girls (F)", len(filtered_df[filtered_df["GENDER"] == "F"]))
-c4.metric("OBC", len(filtered_df[filtered_df["CAT."] == "OBC"]))
-c5.metric("SC / ST", f"{len(filtered_df[filtered_df['CAT.'] == 'SC'])} / {len(filtered_df[filtered_df['CAT.'] == 'ST'])}")
-c6.metric("GEN", len(filtered_df[filtered_df["CAT."] == "GEN"]))
+c4.metric("Hindalco (HE)", len(filtered_df[filtered_df["OCCUPATION"] == "HE"]))
+c5.metric("Supply (HS)", len(filtered_df[filtered_df["OCCUPATION"] == "SUPPLY"]))
+c6.metric("Other (OTH)", len(filtered_df[filtered_df["OCCUPATION"] == "OTH"]))
 
 st.markdown("---")
 
-# ==================== आपकी इमेज के अनुसार सटीक 20 कॉलम ====================
+# ==================== इमेज के अनुसार सटीक 20 कॉलम ====================
 exact_image_columns = [
-    "ROLL NO.",
-    "class",
-    "S.R. NO.",
-    "roll numer 10th",
-    "PEN NUMBER",
-    "AADHAR NO.",
-    "D.O.B.",
-    "STUDENT'S NAME",
-    "FATHER'S NAME",
-    "MOTHER'S NAME",
-    "GENDER",
-    "CASTE",
-    "CAT.",
-    "RELIGION",
-    "ADDRESS",
-    "MOB. NO.",
-    "EMAIL ID",
-    "OCCUPATION (OTH / HE / HS)",
-    "E.CODE",
-    "DEPT."
+    "ROLL NO.", "class", "S.R. NO.", "roll numer 10th", "PEN NUMBER",
+    "AADHAR NO.", "D.O.B.", "STUDENT'S NAME", "FATHER'S NAME", "MOTHER'S NAME",
+    "GENDER", "CASTE", "CAT.", "RELIGION", "ADDRESS", "MOB. NO.", "EMAIL ID",
+    "OCCUPATION", "E.CODE", "DEPT."
 ]
 
-# मौजूद कॉलम को उसी क्रम में दिखाना
 display_columns = [col for col in exact_image_columns if col in filtered_df.columns]
 
 # मुख्य डेटा टेबल
@@ -154,10 +151,42 @@ st.dataframe(
     hide_index=True
 )
 
-# डाउनलोड बटन
+# फ़िल्टर्ड डेटा डाउनलोड बटन
 st.download_button(
     label="📥 यह फ़िल्टर किया हुआ डेटा CSV में डाउनलोड करें",
     data=filtered_df[display_columns].to_csv(index=False).encode('utf-8'),
     file_name="Student_Data_Filtered.csv",
     mime="text/csv"
 )
+
+# ==================== नीचे सम्पूर्ण सांख्यिकी (Detailed Statistics Breakdown) ====================
+st.markdown("---")
+st.subheader("📊 वर्गवार एवं ऑक्यूपेशन सांख्यिकी विवरण (Overall Breakdown & Totals)")
+
+stat_col1, stat_col2, stat_col3 = st.columns(3)
+
+with stat_col1:
+    st.markdown("##### 📌 सामाजिक वर्ग (Category-wise)")
+    cat_summary = filtered_df["CAT."].value_counts().reset_index()
+    cat_summary.columns = ["Category", "कुल छात्र (Count)"]
+    cat_summary["प्रतिशत (%)"] = ((cat_summary["कुल छात्र (Count)"] / len(filtered_df)) * 100).round(1).astype(str) + "%"
+    st.table(cat_summary)
+
+with stat_col2:
+    st.markdown("##### 🏢 ऑक्यूपेशन (HE / SUPPLY / OTH)")
+    occ_summary = filtered_df["OCCUPATION"].value_counts().reset_index()
+    occ_summary.columns = ["Occupation", "कुल छात्र (Count)"]
+    occ_summary["विवरण"] = occ_summary["Occupation"].map({
+        "HE": "Hindalco Employee (E.Code उपलब्ध)",
+        "SUPPLY": "Hindalco Supply",
+        "OTH": "Other / Private",
+        "-": "उपलब्ध नहीं"
+    }).fillna("-")
+    st.table(occ_summary)
+
+with stat_col3:
+    st.markdown("##### 🚻 लिंग अनुपात (Gender-wise)")
+    gen_summary = filtered_df["GENDER"].value_counts().reset_index()
+    gen_summary.columns = ["Gender", "कुल छात्र (Count)"]
+    gen_summary["प्रतिशत (%)"] = ((gen_summary["कुल छात्र (Count)"] / len(filtered_df)) * 100).round(1).astype(str) + "%"
+    st.table(gen_summary)

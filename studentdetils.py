@@ -10,7 +10,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 2. डेटा लोडिंग एवं मर्जिंग फ़ंक्शन
+# 2. डेटा लोडिंग एवं सटीक मर्जिंग फ़ंक्शन (Roll No. आधारित - नो डुप्लीकेट)
 @st.cache_data
 def load_all_data():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,8 +35,8 @@ def load_all_data():
         elif str(col).strip() == "ADDRESS":
             df_info.rename(columns={col: "ADDRESS"}, inplace=True)
 
-    if "ROLL NO." in df_info.columns:
-        df_info["ROLL NO."] = pd.to_numeric(df_info["ROLL NO."], errors="coerce").fillna(0).astype(int)
+    df_info["ROLL NO."] = pd.to_numeric(df_info["ROLL NO."], errors="coerce").fillna(0).astype(int)
+    
     if "S.R. NO." in df_info.columns:
         df_info["S.R. NO."] = pd.to_numeric(df_info["S.R. NO."], errors="coerce").fillna(0).astype(int).astype(str)
     if "roll numer 10th" in df_info.columns:
@@ -58,9 +58,10 @@ def load_all_data():
         if col in df_info.columns:
             df_info[col] = df_info[col].astype(str).str.strip().str.upper().replace("NAN", "-").replace("", "-")
 
-    df_info["_KEY_NAME"] = df_info["STUDENT'S NAME"].astype(str).str.replace(".", "", regex=False).str.strip().str.upper()
+    # डुप्लीकेट रोल नंबर की सुरक्षा
+    df_info = df_info.drop_duplicates(subset=["ROLL NO."]).copy()
 
-    # ------------------ B. अटेंडेंस शीट ------------------
+    # ------------------ B. अटेंडेंस शीट (Roll No / S.No से मर्ज) ------------------
     att_files = [
         os.path.join(base_dir, "attandance.xlsx"),
         os.path.join(base_dir, "attendance.xlsx"),
@@ -72,33 +73,42 @@ def load_all_data():
 
     if att_path:
         df_att = pd.read_excel(att_path, sheet_name=0)
+        sno_col = next((c for c in df_att.columns if "S" in str(c).upper() and "NO" in str(c).upper()), None)
         name_col = next((c for c in df_att.columns if "STUDENT" in str(c).upper()), None)
-        if name_col:
-            renamed_att = {}
-            for c in df_att.columns:
-                c_str = str(c).strip()
-                if "2026-04" in c_str or c_str.upper() in ["APR", "APRIL", "APR-"]:
-                    renamed_att[c] = "APR"
-                elif "PER OUT OF" in c_str.upper() or "%" in c_str:
-                    clean_pct = c_str.replace("PER OUT OF", "% OUT OF")
-                    renamed_att[c] = clean_pct
-                    latest_pct_col = clean_pct
-                elif "TOAL" in c_str.upper():
-                    renamed_att[c] = c_str.replace("TOAL", "TOTAL")
-                else:
-                    renamed_att[c] = c_str
-            df_att.rename(columns=renamed_att, inplace=True)
-            df_att["_KEY_NAME"] = df_att[name_col].astype(str).str.replace(".", "", regex=False).str.strip().str.upper()
+        
+        renamed_att = {}
+        for c in df_att.columns:
+            c_str = str(c).strip()
+            if "2026-04" in c_str or c_str.upper() in ["APR", "APRIL", "APR-"]:
+                renamed_att[c] = "APR"
+            elif "PER OUT OF" in c_str.upper() or "%" in c_str:
+                clean_pct = c_str.replace("PER OUT OF", "% OUT OF")
+                renamed_att[c] = clean_pct
+                latest_pct_col = clean_pct
+            elif "TOAL" in c_str.upper():
+                renamed_att[c] = c_str.replace("TOAL", "TOTAL")
+            else:
+                renamed_att[c] = c_str
+        df_att.rename(columns=renamed_att, inplace=True)
 
-            att_cols = [c for c in df_att.columns if c not in ["S NO.", "S.NO.", name_col, "_KEY_NAME"]]
-            for pc in att_cols:
-                if "%" in pc:
-                    df_att[pc] = pd.to_numeric(df_att[pc], errors="coerce").round(1)
+        # रोल नंबर बनाना
+        if sno_col and sno_col in df_att.columns:
+            df_att["ROLL NO."] = pd.to_numeric(df_att[sno_col], errors="coerce").fillna(0).astype(int)
+        else:
+            df_att["ROLL NO."] = range(1, len(df_att) + 1)
 
-            df_info = pd.merge(df_info, df_att[["_KEY_NAME"] + att_cols], on="_KEY_NAME", how="left")
-            attendance_cols = att_cols
+        # डुप्लीकेट हटाना
+        df_att = df_att.drop_duplicates(subset=["ROLL NO."]).copy()
 
-    # ------------------ C. मंथली टेस्ट शीट (Updated Logic) ------------------
+        att_cols = [c for c in df_att.columns if c not in ["S NO.", "S.NO.", name_col, "ROLL NO."]]
+        for pc in att_cols:
+            if "%" in pc:
+                df_att[pc] = pd.to_numeric(df_att[pc], errors="coerce").round(1)
+
+        df_info = pd.merge(df_info, df_att[["ROLL NO."] + att_cols], on="ROLL NO.", how="left")
+        attendance_cols = att_cols
+
+    # ------------------ C. मंथली टेस्ट शीट (Roll No से यूनिक मर्ज) ------------------
     test_files = [
         os.path.join(base_dir, "MONTHLY TEST_2.xlsx"),
         os.path.join(base_dir, "MONTHLY TEST.xlsx"),
@@ -110,12 +120,10 @@ def load_all_data():
 
     if test_path:
         xls_test = pd.ExcelFile(test_path)
-        # अपडेटेड Sheet1 को प्राथमिकता दें
         target_sheet = 'Sheet1' if 'Sheet1' in xls_test.sheet_names else xls_test.sheet_names[0]
-
         df_raw_test = pd.read_excel(test_path, sheet_name=target_sheet)
         
-        # हेडर पंक्ति ढूँढना
+        # हेडर पंक्ति खोजना
         header_idx = None
         for i in range(min(5, len(df_raw_test))):
             row_str = " ".join([str(x).upper() for x in df_raw_test.iloc[i].values])
@@ -127,20 +135,13 @@ def load_all_data():
             df_test_data = df_raw_test.iloc[header_idx + 1:].copy()
             new_headers = df_raw_test.iloc[header_idx].values.tolist()
             
-            # नाम का कॉलम पहचानना (जहाँ टेक्स्ट नाम हों)
-            name_idx = 1 if len(new_headers) > 1 and "ROLL" in str(new_headers[0]).upper() else 0
-            for c_i in range(min(3, len(new_headers))):
-                sample_val = str(df_test_data.iloc[0, c_i]).strip()
-                if any(char.isalpha() for char in sample_val) and not sample_val.replace('.', '').isdigit():
-                    name_idx = c_i
-                    break
-
+            roll_idx = 0
             cols_map = {}
             for idx, h in enumerate(new_headers):
                 h_str = str(h).strip().upper()
                 orig_col = df_test_data.columns[idx]
-                if idx == name_idx:
-                    cols_map[orig_col] = "_TEST_NAME"
+                if idx == roll_idx and "ROLL" in h_str:
+                    cols_map[orig_col] = "ROLL NO."
                 elif "HINDI" in h_str:
                     cols_map[orig_col] = "TEST_HINDI (20)"
                 elif "ENG" in h_str:
@@ -155,8 +156,14 @@ def load_all_data():
                     cols_map[orig_col] = "TEST_TOTAL (100)"
 
             df_test_data.rename(columns=cols_map, inplace=True)
-            df_test_data = df_test_data.dropna(subset=["_TEST_NAME"]).copy()
-            df_test_data["_KEY_NAME"] = df_test_data["_TEST_NAME"].astype(str).str.replace(".", "", regex=False).str.strip().str.upper()
+            
+            if "ROLL NO." in df_test_data.columns:
+                df_test_data["ROLL NO."] = pd.to_numeric(df_test_data["ROLL NO."], errors="coerce").fillna(0).astype(int)
+            else:
+                df_test_data["ROLL NO."] = range(1, len(df_test_data) + 1)
+
+            # टेस्ट शीट में अगर कोई डुप्लीकेट रोल नंबर हो तो केवल अंतिम एंट्री रखें
+            df_test_data = df_test_data.drop_duplicates(subset=["ROLL NO."], keep="last").copy()
 
             subject_cols = [c for c in cols_map.values() if c.startswith("TEST_")]
             for sc in subject_cols:
@@ -166,10 +173,9 @@ def load_all_data():
                 df_test_data["TEST %"] = df_test_data["TEST_TOTAL (100)"].round(1)
                 subject_cols.append("TEST %")
 
-            df_info = pd.merge(df_info, df_test_data[["_KEY_NAME"] + subject_cols], on="_KEY_NAME", how="left")
+            df_info = pd.merge(df_info, df_test_data[["ROLL NO."] + subject_cols], on="ROLL NO.", how="left")
             test_cols = subject_cols
 
-    df_info.drop(columns=["_KEY_NAME"], inplace=True)
     return df_info, attendance_cols, latest_pct_col, test_cols
 
 try:
@@ -307,6 +313,7 @@ selected_display_cols = st.multiselect(
     default=all_display_options
 )
 
+# तालिका प्रदर्शित करना (बिना किसी डुप्लीकेट नाम के)
 st.dataframe(
     filtered_df[selected_display_cols].reset_index(drop=True),
     use_container_width=True,

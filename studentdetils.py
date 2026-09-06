@@ -10,23 +10,34 @@ st.set_page_config(
     layout="wide"
 )
 
-# 2. डेटा लोडिंग एवं सटीक मर्जिंग फ़ंक्शन (Roll No. आधारित - नो डुप्लीकेट)
+# 2. डेटा लोडिंग एवं सटीक मर्जिंग फ़ंक्शन
 @st.cache_data
 def load_all_data():
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    all_excel_files = glob.glob(os.path.join(base_dir, "*.xlsx")) + glob.glob(os.path.join(base_dir, "*.xls"))
     
     # ------------------ A. मुख्य छात्र विवरण शीट ------------------
-    info_files = [
-        os.path.join(base_dir, "XII B INFORMATION_2.xlsx"),
-        os.path.join(base_dir, "XII B INFORMATION.xlsx"),
-    ] + [f for f in glob.glob(os.path.join(base_dir, "*.xlsx")) 
-         if not any(k in os.path.basename(f).lower() for k in ["att", "test"])]
-    
-    info_path = next((f for f in info_files if os.path.exists(f)), None)
+    info_path = None
+    for f in all_excel_files:
+        fname = os.path.basename(f).lower()
+        if "info" in fname or ("xii" in fname and "att" not in fname and "test" not in fname):
+            info_path = f
+            break
+    if not info_path:
+        # फ़ॉलबैक: कोई भी गैर-अटेंडेंस, गैर-टेस्ट फ़ाइल
+        for f in all_excel_files:
+            fname = os.path.basename(f).lower()
+            if "att" not in fname and "test" not in fname:
+                info_path = f
+                break
+
     if not info_path:
         raise FileNotFoundError("मुख्य छात्र विवरण फ़ाइल (XII B INFORMATION.xlsx) नहीं मिली।")
 
-    df_info = pd.read_excel(info_path, sheet_name="Sheet1 (5)")
+    # शीट ढूँढना
+    xls_info = pd.ExcelFile(info_path)
+    info_sheet = next((s for s in xls_info.sheet_names if "5" in s), xls_info.sheet_names[0])
+    df_info = pd.read_excel(info_path, sheet_name=info_sheet)
     df_info = df_info.dropna(subset=["STUDENT'S NAME"]).copy()
 
     for col in list(df_info.columns):
@@ -58,16 +69,16 @@ def load_all_data():
         if col in df_info.columns:
             df_info[col] = df_info[col].astype(str).str.strip().str.upper().replace("NAN", "-").replace("", "-")
 
-    # डुप्लीकेट रोल नंबर की सुरक्षा
     df_info = df_info.drop_duplicates(subset=["ROLL NO."]).copy()
+    df_info["_KEY_NAME"] = df_info["STUDENT'S NAME"].astype(str).str.replace(".", "", regex=False).str.strip().str.upper()
 
-    # ------------------ B. अटेंडेंस शीट (Roll No / S.No से मर्ज) ------------------
-    att_files = [
-        os.path.join(base_dir, "attandance.xlsx"),
-        os.path.join(base_dir, "attendance.xlsx"),
-    ] + [f for f in glob.glob(os.path.join(base_dir, "*att*.xlsx"))]
-    
-    att_path = next((f for f in att_files if os.path.exists(f)), None)
+    # ------------------ B. अटेंडेंस शीट ------------------
+    att_path = None
+    for f in all_excel_files:
+        if "att" in os.path.basename(f).lower():
+            att_path = f
+            break
+            
     attendance_cols = []
     latest_pct_col = None
 
@@ -91,15 +102,12 @@ def load_all_data():
                 renamed_att[c] = c_str
         df_att.rename(columns=renamed_att, inplace=True)
 
-        # रोल नंबर बनाना
         if sno_col and sno_col in df_att.columns:
             df_att["ROLL NO."] = pd.to_numeric(df_att[sno_col], errors="coerce").fillna(0).astype(int)
         else:
             df_att["ROLL NO."] = range(1, len(df_att) + 1)
 
-        # डुप्लीकेट हटाना
         df_att = df_att.drop_duplicates(subset=["ROLL NO."]).copy()
-
         att_cols = [c for c in df_att.columns if c not in ["S NO.", "S.NO.", name_col, "ROLL NO."]]
         for pc in att_cols:
             if "%" in pc:
@@ -108,39 +116,46 @@ def load_all_data():
         df_info = pd.merge(df_info, df_att[["ROLL NO."] + att_cols], on="ROLL NO.", how="left")
         attendance_cols = att_cols
 
-    # ------------------ C. मंथली टेस्ट शीट (Roll No से यूनिक मर्ज) ------------------
-    test_files = [
-        os.path.join(base_dir, "MONTHLY TEST_2.xlsx"),
-        os.path.join(base_dir, "MONTHLY TEST.xlsx"),
-        os.path.join(base_dir, "monthly test.xlsx"),
-    ] + [f for f in glob.glob(os.path.join(base_dir, "*test*.xlsx"))]
-    
-    test_path = next((f for f in test_files if os.path.exists(f)), None)
+    # ------------------ C. मंथली टेस्ट शीट (यूनिवर्सल डिटेक्शन) ------------------
+    test_path = None
+    for f in all_excel_files:
+        if "test" in os.path.basename(f).lower():
+            test_path = f
+            break
+            
     test_cols = []
-
     if test_path:
         xls_test = pd.ExcelFile(test_path)
-        target_sheet = 'Sheet1' if 'Sheet1' in xls_test.sheet_names else xls_test.sheet_names[0]
-        df_raw_test = pd.read_excel(test_path, sheet_name=target_sheet)
+        # 12वीं की टेस्ट शीट ढूँढना जिसमें HINDI और TOTAL दोनों हों
+        best_sheet = None
+        for s in xls_test.sheet_names:
+            raw_s = pd.read_excel(test_path, sheet_name=s, nrows=6)
+            s_text = " ".join([str(v).upper() for v in raw_s.values.flatten()])
+            if "HINDI" in s_text and "TOTAL" in s_text:
+                best_sheet = s
+                break
+        if not best_sheet:
+            best_sheet = xls_test.sheet_names[0]
+
+        df_raw_test = pd.read_excel(test_path, sheet_name=best_sheet)
         
         # हेडर पंक्ति खोजना
         header_idx = None
-        for i in range(min(5, len(df_raw_test))):
+        for i in range(min(6, len(df_raw_test))):
             row_str = " ".join([str(x).upper() for x in df_raw_test.iloc[i].values])
             if "HINDI" in row_str and "TOTAL" in row_str:
                 header_idx = i
                 break
-        
+
         if header_idx is not None:
             df_test_data = df_raw_test.iloc[header_idx + 1:].copy()
             new_headers = df_raw_test.iloc[header_idx].values.tolist()
-            
-            roll_idx = 0
+
             cols_map = {}
             for idx, h in enumerate(new_headers):
                 h_str = str(h).strip().upper()
                 orig_col = df_test_data.columns[idx]
-                if idx == roll_idx and "ROLL" in h_str:
+                if "ROLL" in h_str:
                     cols_map[orig_col] = "ROLL NO."
                 elif "HINDI" in h_str:
                     cols_map[orig_col] = "TEST_HINDI (20)"
@@ -156,14 +171,14 @@ def load_all_data():
                     cols_map[orig_col] = "TEST_TOTAL (100)"
 
             df_test_data.rename(columns=cols_map, inplace=True)
-            
+
             if "ROLL NO." in df_test_data.columns:
                 df_test_data["ROLL NO."] = pd.to_numeric(df_test_data["ROLL NO."], errors="coerce").fillna(0).astype(int)
             else:
                 df_test_data["ROLL NO."] = range(1, len(df_test_data) + 1)
 
-            # टेस्ट शीट में अगर कोई डुप्लीकेट रोल नंबर हो तो केवल अंतिम एंट्री रखें
-            df_test_data = df_test_data.drop_duplicates(subset=["ROLL NO."], keep="last").copy()
+            # डुप्लीकेट हटाना (अंतिम रिकॉर्ड रखना)
+            df_test_data = df_test_data[df_test_data["ROLL NO."] > 0].drop_duplicates(subset=["ROLL NO."], keep="last").copy()
 
             subject_cols = [c for c in cols_map.values() if c.startswith("TEST_")]
             for sc in subject_cols:
@@ -176,6 +191,7 @@ def load_all_data():
             df_info = pd.merge(df_info, df_test_data[["ROLL NO."] + subject_cols], on="ROLL NO.", how="left")
             test_cols = subject_cols
 
+    df_info.drop(columns=["_KEY_NAME"], inplace=True)
     return df_info, attendance_cols, latest_pct_col, test_cols
 
 try:
@@ -233,6 +249,9 @@ if "TEST %" in df.columns:
     if test_filter_mode == "कस्टम टेस्ट % फ़िल्टर":
         custom_test_pct = st.sidebar.slider("टेस्ट प्रतिशत / मार्क्स चुनें:", 0, 100, 40)
         test_cond = st.sidebar.selectbox("शर्त (टेस्ट):", ["से अधिक या बराबर (>=)", "से कम (<)"])
+    st.sidebar.success(f"✅ टेस्ट डेटा सक्रिय ({len(test_cols)} फ़ील्ड्स)")
+else:
+    st.sidebar.warning("⚠️ मंथली टेस्ट फ़ाइल नहीं मिली")
 
 # ==================== फ़िल्टरिंग लागू करना ====================
 filtered_df = df.copy()
@@ -298,31 +317,52 @@ else:
 
 st.markdown("---")
 
-# ==================== डेटा तालिका व्यू ====================
-base_info_cols = [
-    "ROLL NO.", "class", "S.R. NO.", "STUDENT'S NAME", "FATHER'S NAME",
-    "GENDER", "CAT.", "CASTE", "MOB. NO.", "OCCUPATION", "E.CODE", "DEPT."
-]
+# ==================== 3 अलग-अलग टैब (Tabs View) ====================
+tab1, tab2, tab3 = st.tabs([
+    "📘 1. समग्र मास्टर टेबल (All Data)",
+    "📝 2. मंथली टेस्ट मार्क्स (Monthly Test)",
+    "📅 3. हाजिरी रिकॉर्ड (Attendance)"
+])
 
-available_base = [c for c in base_info_cols if c in filtered_df.columns]
-all_display_options = available_base + attendance_cols + test_cols
+# टैब 1: All Data
+with tab1:
+    base_info_cols = [
+        "ROLL NO.", "class", "S.R. NO.", "STUDENT'S NAME", "FATHER'S NAME",
+        "GENDER", "CAT.", "CASTE", "MOB. NO.", "OCCUPATION", "E.CODE", "DEPT."
+    ]
+    available_base = [c for c in base_info_cols if c in filtered_df.columns]
+    all_display_options = available_base + attendance_cols + test_cols
 
-selected_display_cols = st.multiselect(
-    "तालिका में देखने के लिए कॉलम चुनें (इन्फो + हाजिरी + टेस्ट मार्क्स):",
-    options=all_display_options,
-    default=all_display_options
-)
+    selected_display_cols = st.multiselect(
+        "तालिका में कॉलम चुनें:",
+        options=all_display_options,
+        default=all_display_options,
+        key="master_cols"
+    )
+    st.dataframe(filtered_df[selected_display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
 
-# तालिका प्रदर्शित करना (बिना किसी डुप्लीकेट नाम के)
-st.dataframe(
-    filtered_df[selected_display_cols].reset_index(drop=True),
-    use_container_width=True,
-    hide_index=True
-)
+# टैब 2: Monthly Test Dedicated View
+with tab2:
+    if test_cols:
+        test_view_cols = ["ROLL NO.", "STUDENT'S NAME", "FATHER'S NAME"] + test_cols
+        test_view_cols = [c for c in test_view_cols if c in filtered_df.columns]
+        st.dataframe(filtered_df[test_view_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+    else:
+        st.info("मंथली टेस्ट का डेटा लोड नहीं है।")
 
+# टैब 3: Attendance Dedicated View
+with tab3:
+    if attendance_cols:
+        att_view_cols = ["ROLL NO.", "STUDENT'S NAME", "FATHER'S NAME"] + attendance_cols
+        att_view_cols = [c for c in att_view_cols if c in filtered_df.columns]
+        st.dataframe(filtered_df[att_view_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+    else:
+        st.info("अटेंडेंस डेटा लोड नहीं है।")
+
+# डाउनलोड बटन
 st.download_button(
-    label="📥 यह फ़िल्टर किया हुआ समग्र डेटा (CSV) डाउनलोड करें",
-    data=filtered_df[selected_display_cols].to_csv(index=False).encode('utf-8'),
+    label="📥 यह फ़िल्टर किया हुआ डेटा (CSV) डाउनलोड करें",
+    data=filtered_df.to_csv(index=False).encode('utf-8'),
     file_name="Student_Complete_Master_Report.csv",
     mime="text/csv"
 )
@@ -351,11 +391,6 @@ with stat2:
             "छात्र संख्या": [above_75, between_50_75, below_50]
         })
         st.table(att_summary_df)
-    else:
-        st.markdown("##### 🏢 ऑक्यूपेशन (Occupation)")
-        occ_df = filtered_df["OCCUPATION"].value_counts().reset_index()
-        occ_df.columns = ["Occupation", "छात्र संख्या"]
-        st.table(occ_df)
 
 with stat3:
     if "TEST %" in filtered_df.columns:
@@ -370,8 +405,3 @@ with stat3:
             "छात्र संख्या": [t_above_75, t_60_75, t_33_60, t_below_33]
         })
         st.table(test_summary_df)
-    else:
-        st.markdown("##### 🚻 लिंग अनुपात (Gender-wise)")
-        gen_df = filtered_df["GENDER"].value_counts().reset_index()
-        gen_df.columns = ["Gender", "छात्र संख्या"]
-        st.table(gen_df)

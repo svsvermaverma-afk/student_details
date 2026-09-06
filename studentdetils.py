@@ -29,7 +29,6 @@ def load_all_data():
     df_info = pd.read_excel(info_path, sheet_name="Sheet1 (5)")
     df_info = df_info.dropna(subset=["STUDENT'S NAME"]).copy()
 
-    # कॉलम नाम साफ़ करना
     for col in list(df_info.columns):
         if "OCCUPATION" in str(col):
             df_info.rename(columns={col: "OCCUPATION"}, inplace=True)
@@ -59,7 +58,6 @@ def load_all_data():
         if col in df_info.columns:
             df_info[col] = df_info[col].astype(str).str.strip().str.upper().replace("NAN", "-").replace("", "-")
 
-    # मैचिंग की Key तैयार करना
     df_info["_KEY_NAME"] = df_info["STUDENT'S NAME"].astype(str).str.replace(".", "", regex=False).str.strip().str.upper()
 
     # ------------------ B. अटेंडेंस शीट ------------------
@@ -100,8 +98,9 @@ def load_all_data():
             df_info = pd.merge(df_info, df_att[["_KEY_NAME"] + att_cols], on="_KEY_NAME", how="left")
             attendance_cols = att_cols
 
-    # ------------------ C. मंथली टेस्ट शीट ------------------
+    # ------------------ C. मंथली टेस्ट शीट (Updated Logic) ------------------
     test_files = [
+        os.path.join(base_dir, "MONTHLY TEST_2.xlsx"),
         os.path.join(base_dir, "MONTHLY TEST.xlsx"),
         os.path.join(base_dir, "monthly test.xlsx"),
     ] + [f for f in glob.glob(os.path.join(base_dir, "*test*.xlsx"))]
@@ -111,36 +110,31 @@ def load_all_data():
 
     if test_path:
         xls_test = pd.ExcelFile(test_path)
-        # 12th B टेस्ट डेटा शीट ढूँढना (Sheet1 (2) या Sheet1)
-        target_sheet = None
-        for s in xls_test.sheet_names:
-            first_rows = pd.read_excel(test_path, sheet_name=s, nrows=3)
-            if any("12" in str(c) for c in first_rows.columns) or any("12" in str(v) for v in first_rows.values.flatten()):
-                target_sheet = s
-                break
-        if not target_sheet:
-            target_sheet = xls_test.sheet_names[0]
+        # अपडेटेड Sheet1 को प्राथमिकता दें
+        target_sheet = 'Sheet1' if 'Sheet1' in xls_test.sheet_names else xls_test.sheet_names[0]
 
         df_raw_test = pd.read_excel(test_path, sheet_name=target_sheet)
         
-        # हेडर पंक्ति ढूँढना जहाँ HINDI, PHY आदि विषय हों
+        # हेडर पंक्ति ढूँढना
         header_idx = None
         for i in range(min(5, len(df_raw_test))):
-            row_str = " ".join(df_raw_test.iloc[i].astype(str).str.upper())
-            if "HINDI" in row_str or "TOTAL" in row_str:
+            row_str = " ".join([str(x).upper() for x in df_raw_test.iloc[i].values])
+            if "HINDI" in row_str and "TOTAL" in row_str:
                 header_idx = i
                 break
         
         if header_idx is not None:
-            # हेडर सेट करना
             df_test_data = df_raw_test.iloc[header_idx + 1:].copy()
             new_headers = df_raw_test.iloc[header_idx].values.tolist()
             
-            # नाम का कॉलम पहला या दूसरा कॉलम होता है
-            name_idx = 0
-            if "ROLL" in str(new_headers[0]).upper():
-                name_idx = 1
-                
+            # नाम का कॉलम पहचानना (जहाँ टेक्स्ट नाम हों)
+            name_idx = 1 if len(new_headers) > 1 and "ROLL" in str(new_headers[0]).upper() else 0
+            for c_i in range(min(3, len(new_headers))):
+                sample_val = str(df_test_data.iloc[0, c_i]).strip()
+                if any(char.isalpha() for char in sample_val) and not sample_val.replace('.', '').isdigit():
+                    name_idx = c_i
+                    break
+
             cols_map = {}
             for idx, h in enumerate(new_headers):
                 h_str = str(h).strip().upper()
@@ -168,7 +162,6 @@ def load_all_data():
             for sc in subject_cols:
                 df_test_data[sc] = pd.to_numeric(df_test_data[sc], errors="coerce").fillna(0)
 
-            # Test % जोड़ना
             if "TEST_TOTAL (100)" in df_test_data.columns:
                 df_test_data["TEST %"] = df_test_data["TEST_TOTAL (100)"].round(1)
                 subject_cols.append("TEST %")
@@ -229,7 +222,7 @@ if "TEST %" in df.columns:
     st.sidebar.header("📝 मासिक टेस्ट फ़िल्टर (Test % / Marks)")
     test_filter_mode = st.sidebar.radio(
         "टेस्ट प्रदर्शन आधार पर चुनें:",
-        ["सभी विद्यार्थी", "33% से कम (< 33% कमजोर / फेल)", "60% या अधिक (>= 60% First Div)", "75% या अधिक (Distinction)", "कस्टम टेस्ट % फ़िल्टर"]
+        ["सभी विद्यार्थी", "33% से कम (< 33% फेल / कमजोर)", "60% या अधिक (>= 60% First Div)", "75% या अधिक (Distinction)", "कस्टम टेस्ट % फ़िल्टर"]
     )
     if test_filter_mode == "कस्टम टेस्ट % फ़िल्टर":
         custom_test_pct = st.sidebar.slider("टेस्ट प्रतिशत / मार्क्स चुनें:", 0, 100, 40)
@@ -264,7 +257,7 @@ if latest_pct_col and latest_pct_col in filtered_df.columns:
 
 # टेस्ट फ़िल्टर
 if "TEST %" in filtered_df.columns:
-    if test_filter_mode == "33% से कम (< 33% कमजोर / फेल)":
+    if test_filter_mode == "33% से कम (< 33% फेल / कमजोर)":
         filtered_df = filtered_df[filtered_df["TEST %"] < 33.0]
     elif test_filter_mode == "60% या अधिक (>= 60% First Div)":
         filtered_df = filtered_df[filtered_df["TEST %"] >= 60.0]
@@ -308,21 +301,18 @@ base_info_cols = [
 available_base = [c for c in base_info_cols if c in filtered_df.columns]
 all_display_options = available_base + attendance_cols + test_cols
 
-# कॉलम कस्टमाइज़ करने का विकल्प
 selected_display_cols = st.multiselect(
     "तालिका में देखने के लिए कॉलम चुनें (इन्फो + हाजिरी + टेस्ट मार्क्स):",
     options=all_display_options,
     default=all_display_options
 )
 
-# तालिका प्रदर्शित करना
 st.dataframe(
     filtered_df[selected_display_cols].reset_index(drop=True),
     use_container_width=True,
     hide_index=True
 )
 
-# डाउनलोड बटन
 st.download_button(
     label="📥 यह फ़िल्टर किया हुआ समग्र डेटा (CSV) डाउनलोड करें",
     data=filtered_df[selected_display_cols].to_csv(index=False).encode('utf-8'),
